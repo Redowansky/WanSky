@@ -16,7 +16,7 @@ object StreamGate {
         "https://pub-88baf9e209354ab5b4edee733305154f.r2.dev/"
     const val STREAM_BASE = "https://redowansky.bond/stream/"
     const val TOKEN_URL = "https://redowansky.bond/api/play-token"
-    const val UA = "WanskyApp/0.1.0"
+    const val UA = "WanskyApp/0.1.1"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
