@@ -8,16 +8,17 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
-/** Live TV playlists, fetched on-device. The 103 BDIX list only
- *  answers Bangladesh IPs — it fails on other networks, which the
- *  UI reports per-playlist instead of failing the whole load. */
+/** Live TV playlists, hosted on R2 as live-only lists. Every URL
+ *  was checked live (sweep 2026-11-06: 13,460 channels checked,
+ *  2,207 live kept; the rest dropped). The 103 BDIX list is dead
+ *  on both ends (server never answers, errors on his phone too)
+ *  and is gone. Lists are re-swept and re-uploaded when they rot. */
 object Playlists {
-    const val URL_103 = "http://103.229.254.25:7001/playlist.m3u8"
-    const val URL_BDIX = "https://raw.githubusercontent.com/Sopnnonil775/Bdix3/refs/heads/main/Bdix.m3u"
-    const val URL_IPTVORG = "https://iptv-org.github.io/iptv/index.m3u"
+    private const val R2_TV = "https://pub-89e47025e7844f1eaf672a00cfdbba12.r2.dev/app/tv"
+    const val URL_BDIX = "$R2_TV/bdix-live.m3u"
+    const val URL_IPTVORG = "$R2_TV/iptv-org-live.m3u"
 
     val ALL = listOf(
-        "103 BDIX" to URL_103,
         "Bdix" to URL_BDIX,
         "iptv-org" to URL_IPTVORG
     )
@@ -46,7 +47,7 @@ object Playlists {
                 async(Dispatchers.IO) {
                     try {
                         val req = Request.Builder().url(url)
-                            .header("User-Agent", "WanskyApp/0.2.3").build()
+                            .header("User-Agent", "WanskyApp/0.2.4").build()
                         client.newCall(req).execute().use { resp ->
                             if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                             parseM3u(resp.body?.string().orEmpty(), label) to (null as String?)

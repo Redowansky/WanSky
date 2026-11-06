@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
  *  videos.list only (1 unit), so the home feed is nearly free. */
 object YouTube {
     private const val BASE = "https://www.googleapis.com/youtube/v3"
-    private const val UA = "WanskyApp/0.2.3"
+    private const val UA = "WanskyApp/0.2.4"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)

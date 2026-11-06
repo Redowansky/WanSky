@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit
 object Updater {
     const val VERSION_URL =
         "https://pub-89e47025e7844f1eaf672a00cfdbba12.r2.dev/app/wansky-version.json"
-    private const val UA = "WanskyApp/0.2.3"
+    private const val UA = "WanskyApp/0.2.4"
 
     data class UpdateInfo(
         val versionCode: Int,

@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
  *  only matches the RedowanskyLibraryApp UA) does not apply. */
 object Catalog {
     const val API_URL = "https://redowansky.bond/api/movies"
-    const val UA = "WanskyApp/0.2.3"
+    const val UA = "WanskyApp/0.2.4"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
