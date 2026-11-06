@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="wansky_bg">#0A0F0B</color>
+    <color name="wansky_green">#22C55E</color>
+
+    <!-- Plain NoActionBar host theme; Compose draws everything. -->
+    <style name="Theme.Wansky" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/wansky_bg</item>
+    </style>
+</resources>
