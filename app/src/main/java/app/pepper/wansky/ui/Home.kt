@@ -1,5 +1,6 @@
 package app.pepper.wansky.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -63,11 +64,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import app.pepper.wansky.BuildConfig
 import app.pepper.wansky.data.Catalog
 import app.pepper.wansky.data.Favorites
 import app.pepper.wansky.data.Movie
 import app.pepper.wansky.data.Playlists
 import app.pepper.wansky.data.StreamGate
+import app.pepper.wansky.data.Updater
 import app.pepper.wansky.data.isEmbedUrl
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
@@ -86,6 +89,7 @@ private val TOP_TABS = listOf(
 
 @Composable
 fun HomeScreen(nav: NavController) {
+    val ctx = LocalContext.current
     var movies by remember { mutableStateOf<List<Movie>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var channels by remember { mutableStateOf<List<Playlists.Channel>>(emptyList()) }
@@ -94,6 +98,14 @@ fun HomeScreen(nav: NavController) {
     var tab by remember { mutableStateOf("All") }
     var info by remember { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableStateOf(0) }
+    // In-app update: checked once per Home launch; the banner shows
+    // only when the remote versionCode is newer than this build.
+    var update by remember { mutableStateOf<Updater.UpdateInfo?>(null) }
+    var updateBusy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        update = Updater.check()?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
+    }
 
     LaunchedEffect(Unit) {
         try {
@@ -141,6 +153,41 @@ fun HomeScreen(nav: NavController) {
             onSettings = { info = "Settings are coming in a later build." }
         )
         TopTabs(tab) { tab = it }
+        // Update banner (v0.2.1): one tap downloads + installs the new
+        // version in place — no more manual uninstall/reinstall.
+        val upd = update
+        if (upd != null) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant,
+                        RoundedCornerShape(12.dp)
+                    )
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Update available", fontWeight = FontWeight.Bold)
+                    Text(
+                        upd.notes,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        if (Updater.downloadAndInstall(ctx, upd.apkUrl)) {
+                            updateBusy = true
+                            Toast.makeText(ctx, "Downloading update…", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(ctx, "Download couldn't start — try again.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = !updateBusy
+                ) { Text(if (updateBusy) "Downloading…" else "Update") }
+            }
+        }
         when (tab) {
             "All" -> HomeAllTab(
                 nav = nav,

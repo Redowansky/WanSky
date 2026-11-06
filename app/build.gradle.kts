@@ -12,8 +12,8 @@ android {
         applicationId = "app.pepper.wansky"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.2.1"
         // YouTube Data API key: injected from the YOUTUBE_API_KEY Actions
         // secret (or a local.properties entry for local builds). The key
         // never lives in the repo. A blank key makes the YouTube tab show
@@ -23,9 +23,27 @@ android {
         buildConfigField("String", "YOUTUBE_API_KEY", "\"$ytKey\"")
     }
 
+    // Release signing (v0.2.1+): ONE stable keystore, decoded from the
+    // KEYSTORE_BASE64 Actions secret by the workflow. Debug builds keep
+    // using the throwaway debug key — they can never update over each
+    // other, which is why releases are signed. A local build without
+    // KEYSTORE_PATH set simply can't assemble a signed release.
+    signingConfigs {
+        create("release") {
+            val ksPath = System.getenv("KEYSTORE_PATH")
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

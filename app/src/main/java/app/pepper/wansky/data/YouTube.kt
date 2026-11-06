@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
  *  videos.list only (1 unit), so the home feed is nearly free. */
 object YouTube {
     private const val BASE = "https://www.googleapis.com/youtube/v3"
-    private const val UA = "WanskyApp/0.2.0"
+    private const val UA = "WanskyApp/0.2.1"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -211,9 +211,15 @@ object YouTube {
         return when {
             m == "NO_KEY" -> "The YouTube key isn't in this build yet — it needs the YOUTUBE_API_KEY build secret."
             m.contains("quotaExceeded") -> "YouTube's daily limit is reached — try again tomorrow."
-            m.contains("keyInvalid") || m.contains("API_KEY_INVALID") -> "The YouTube key was rejected — it may need to be remade."
+            // Google reports a bad key as reason "badRequest" (verified
+            // 2026-11-06 against the live API) — NOT "keyInvalid". A 400
+            // on our fixed calls is effectively always the key.
+            m.contains("badRequest") || m.contains("keyInvalid") || m.contains("API_KEY_INVALID") ->
+                "The YouTube key was rejected — it may have been copied wrong. Re-save the key and rebuild."
             m.startsWith("YT_403") -> "YouTube refused the request (key or quota) — try again later."
-            m.startsWith("YT_") -> "YouTube didn't answer — check your connection and try again."
+            // The raw code rides along so the exact failure can be
+            // diagnosed from a screenshot instead of guessed at.
+            m.startsWith("YT_") -> "YouTube didn't answer — check your connection and try again. ($m)"
             else -> "YouTube didn't answer: ${e.message}"
         }
     }

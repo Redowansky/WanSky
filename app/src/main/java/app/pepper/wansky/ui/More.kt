@@ -1,6 +1,5 @@
 package app.pepper.wansky.ui
 
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -26,7 +25,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -64,7 +62,6 @@ import coil.compose.AsyncImage
  *  in-app embed player with an Up next list. */
 @Composable
 fun YouTubeScreen(nav: NavController) {
-    val ctx = LocalContext.current
     var chip by remember { mutableStateOf(YouTube.Filter.ALL) }
     var query by remember { mutableStateOf("") }
     var submitted by remember { mutableStateOf("") }
@@ -119,9 +116,6 @@ fun YouTubeScreen(nav: NavController) {
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
-            IconButton({
-                Toast.makeText(ctx, "YouTube settings live in v0.2's search — nothing here yet", Toast.LENGTH_SHORT).show()
-            }) { Icon(Icons.Filled.Settings, "Settings") }
         }
         // Search field.
         TextField(

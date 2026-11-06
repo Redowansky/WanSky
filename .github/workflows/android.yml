@@ -18,11 +18,19 @@ jobs:
       - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: "8.7"
-      - name: Build debug APK
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > wansky-release.keystore
+      - name: Build release APK
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        run: gradle assembleDebug --stacktrace
+          KEYSTORE_PATH: ${{ github.workspace }}/wansky-release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: wansky-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: wansky-release
+          path: app/build/outputs/apk/release/app-release.apk
