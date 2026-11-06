@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -254,6 +255,16 @@ private fun HomeAllTab(
     val scope = rememberCoroutineScope()
     var playError by remember { mutableStateOf<String?>(null) }
     val list = movies.orEmpty()
+    // Computed here, in @Composable context — a LazyColumn's content
+    // lambda is NOT @Composable, so remember() may not be called there.
+    val heroes = remember(list) {
+        list.filter { it.backdropUrl() != null }.take(5)
+            .ifEmpty { list.take(5) }
+    }
+    val latest = remember(list) { list.sortedByDescending { it.year ?: "" }.take(10) }
+    val moviesOnly = list.filter { it.type != "series" }
+    val seriesOnly = list.filter { it.type == "series" }
+    val hindi = list.filter { it.language() == "Hindi" }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -275,10 +286,6 @@ private fun HomeAllTab(
                     CircularProgressIndicator()
                 }
             }
-        }
-        val heroes = remember(list) {
-            list.filter { it.backdropUrl() != null }.take(5)
-                .ifEmpty { list.take(5) }
         }
         if (heroes.isNotEmpty()) {
             item {
@@ -316,7 +323,6 @@ private fun HomeAllTab(
                 onPlay = { playChannel(nav, it) }
             )
         }
-        val latest = remember(list) { list.sortedByDescending { it.year ?: "" }.take(10) }
         if (latest.isNotEmpty()) {
             item {
                 ContentRow("Latest", latest,
@@ -324,7 +330,6 @@ private fun HomeAllTab(
                     onOpen = { nav.navigate("detail/${it.id}") })
             }
         }
-        val moviesOnly = list.filter { it.type != "series" }
         if (moviesOnly.isNotEmpty()) {
             item {
                 ContentRow("Movies", moviesOnly,
@@ -332,7 +337,6 @@ private fun HomeAllTab(
                     onOpen = { nav.navigate("detail/${it.id}") })
             }
         }
-        val seriesOnly = list.filter { it.type == "series" }
         if (seriesOnly.isNotEmpty()) {
             item {
                 ContentRow("TV Series", seriesOnly,
@@ -340,7 +344,6 @@ private fun HomeAllTab(
                     onOpen = { nav.navigate("detail/${it.id}") })
             }
         }
-        val hindi = list.filter { it.language() == "Hindi" }
         if (hindi.isNotEmpty()) {
             item {
                 ContentRow("Hindi Dubbed", hindi,
