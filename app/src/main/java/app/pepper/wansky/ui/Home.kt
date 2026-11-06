@@ -1,6 +1,5 @@
 package app.pepper.wansky.ui
 
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -87,6 +86,9 @@ private val TOP_TABS = listOf(
     "All", "Live TV", "Sports", "Drama", "Movies", "Series", "AI Picks"
 )
 
+/** Bytes as "12.3 MB" for the update progress line. */
+private fun mb(bytes: Long): String = "%.1f MB".format(bytes / 1_000_000.0)
+
 @Composable
 fun HomeScreen(nav: NavController) {
     val ctx = LocalContext.current
@@ -101,7 +103,10 @@ fun HomeScreen(nav: NavController) {
     // In-app update: checked once per Home launch; the banner shows
     // only when the remote versionCode is newer than this build.
     var update by remember { mutableStateOf<Updater.UpdateInfo?>(null) }
-    var updateBusy by remember { mutableStateOf(false) }
+    var downloadState by remember {
+        mutableStateOf<Updater.DownloadState>(Updater.DownloadState.Idle)
+    }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         update = Updater.check()?.takeIf { it.versionCode > BuildConfig.VERSION_CODE }
@@ -157,6 +162,7 @@ fun HomeScreen(nav: NavController) {
         // version in place — no more manual uninstall/reinstall.
         val upd = update
         if (upd != null) {
+            val dl = downloadState
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
                     .background(
@@ -169,7 +175,16 @@ fun HomeScreen(nav: NavController) {
                 Column(Modifier.weight(1f)) {
                     Text("Update available", fontWeight = FontWeight.Bold)
                     Text(
-                        upd.notes,
+                        when (dl) {
+                            is Updater.DownloadState.Progress ->
+                                if (dl.total > 0) "Downloading… ${mb(dl.done)} of ${mb(dl.total)} (${(dl.done * 100 / dl.total).toInt()}%)"
+                                else "Downloading… ${mb(dl.done)}"
+                            is Updater.DownloadState.Failed ->
+                                "Download failed: ${dl.reason} — tap Retry."
+                            is Updater.DownloadState.Done ->
+                                "Downloaded — opening the installer…"
+                            else -> upd.notes
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -177,15 +192,23 @@ fun HomeScreen(nav: NavController) {
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = {
-                        if (Updater.downloadAndInstall(ctx, upd.apkUrl)) {
-                            updateBusy = true
-                            Toast.makeText(ctx, "Downloading update…", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(ctx, "Download couldn't start — try again.", Toast.LENGTH_SHORT).show()
+                        scope.launch {
+                            Updater.download(ctx, upd.apkUrl) { downloadState = it }
                         }
                     },
-                    enabled = !updateBusy
-                ) { Text(if (updateBusy) "Downloading…" else "Update") }
+                    enabled = dl is Updater.DownloadState.Idle ||
+                        dl is Updater.DownloadState.Failed
+                ) {
+                    Text(
+                        when (dl) {
+                            is Updater.DownloadState.Progress ->
+                                if (dl.total > 0) "${(dl.done * 100 / dl.total).toInt()}%" else "Downloading…"
+                            is Updater.DownloadState.Failed -> "Retry"
+                            is Updater.DownloadState.Done -> "Installing…"
+                            else -> "Update"
+                        }
+                    )
+                }
             }
         }
         when (tab) {

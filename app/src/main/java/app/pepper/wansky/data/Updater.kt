@@ -1,15 +1,14 @@
 package app.pepper.wansky.data
 
 import android.app.DownloadManager
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.Uri
 import android.os.Environment
-import androidx.core.content.ContextCompat
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,11 +28,19 @@ import java.util.concurrent.TimeUnit
  *  This only works end-to-end because v0.2.1+ are SIGNED release
  *  builds from one stable keystore: the installer then updates the
  *  app in place. Debug builds (a fresh throwaway key per cloud run)
- *  can never update over each other — that's the conflict he hit. */
+ *  can never update over each other — that's the conflict he hit.
+ *
+ *  v0.2.3 lesson: v0.2.1 waited for DownloadManager's "download
+ *  finished" broadcast to open the installer — on his phone that
+ *  broadcast never arrived, so the banner sat on "Downloading…"
+ *  forever with no progress and no error. The download is now
+ *  POLLED once a second from DownloadManager itself (status, bytes
+ *  downloaded, failure reason), which is the source of truth, and
+ *  the banner shows live progress. The broadcast is gone entirely. */
 object Updater {
     const val VERSION_URL =
         "https://pub-89e47025e7844f1eaf672a00cfdbba12.r2.dev/app/wansky-version.json"
-    private const val UA = "WanskyApp/0.2.2"
+    private const val UA = "WanskyApp/0.2.3"
 
     data class UpdateInfo(
         val versionCode: Int,
@@ -66,54 +73,135 @@ object Updater {
         null
     }
 
-    /** Downloads the APK, then opens the installer when it finishes.
-     *  If the app is killed mid-download, the finished file stays in
-     *  DownloadManager and the user can tap its notification to
-     *  install. Returns false only when the download can't start. */
-    fun downloadAndInstall(ctx: Context, apkUrl: String): Boolean {
-        return try {
-            val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val req = DownloadManager.Request(Uri.parse(apkUrl))
-                .setTitle("Wansky update")
-                .setDescription("Downloading the new version…")
-                .setNotificationVisibility(
-                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                )
-                .setDestinationInExternalFilesDir(
-                    ctx, Environment.DIRECTORY_DOWNLOADS, "wansky-update.apk"
-                )
-                .setMimeType("application/vnd.android.package-archive")
-            val id = dm.enqueue(req)
-            val receiver = object : BroadcastReceiver() {
-                override fun onReceive(c: Context, intent: Intent) {
-                    if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != id) return
-                    try {
-                        ctx.unregisterReceiver(this)
-                    } catch (e: Exception) {
-                    }
-                    val file = File(
-                        ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-                        "wansky-update.apk"
+    /** Live state of one update download, polled from DownloadManager. */
+    sealed interface DownloadState {
+        data object Idle : DownloadState
+        data class Progress(val done: Long, val total: Long) : DownloadState
+        data class Failed(val reason: String) : DownloadState
+        data object Done : DownloadState
+    }
+
+    /** Starts the download, then polls its status once a second until
+     *  it finishes or fails, reporting each state through onState
+     *  (always called on the main thread). On success the installer
+     *  opens automatically. If the user leaves Home mid-download the
+     *  polling stops but the system download keeps going — its own
+     *  notification can be tapped to install. */
+    suspend fun download(
+        ctx: Context, apkUrl: String, onState: (DownloadState) -> Unit
+    ) {
+        onState(DownloadState.Idle)
+        val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val id = try {
+            dm.enqueue(
+                DownloadManager.Request(Uri.parse(apkUrl))
+                    .setTitle("Wansky update")
+                    .setDescription("Downloading the new version…")
+                    .setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                     )
-                    if (!file.exists()) return
-                    val apkUri = FileProvider.getUriForFile(
-                        ctx, "app.pepper.wansky.fileprovider", file
+                    .setDestinationInExternalFilesDir(
+                        ctx, Environment.DIRECTORY_DOWNLOADS, "wansky-update.apk"
                     )
-                    val install = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(apkUri, "application/vnd.android.package-archive")
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    .setMimeType("application/vnd.android.package-archive")
+            )
+        } catch (e: Exception) {
+            onState(DownloadState.Failed(e.message ?: "couldn't start"))
+            return
+        }
+        while (true) {
+            val snap = withContext(Dispatchers.IO) {
+                val c = dm.query(DownloadManager.Query().setFilterById(id))
+                var status = DownloadManager.STATUS_FAILED
+                var done = 0L
+                var total = -1L
+                var reason = 0
+                if (c != null) {
+                    if (c.moveToFirst()) {
+                        status = c.getInt(
+                            c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)
+                        )
+                        done = c.getLong(
+                            c.getColumnIndexOrThrow(
+                                DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR
+                            )
+                        )
+                        total = c.getLong(
+                            c.getColumnIndexOrThrow(
+                                DownloadManager.COLUMN_TOTAL_SIZE_BYTES
+                            )
+                        )
+                        reason = c.getInt(
+                            c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)
+                        )
                     }
-                    ctx.startActivity(install)
+                    c.close()
+                }
+                Triple(status, done to total, reason)
+            }
+            val (status, doneTotal, reason) = snap
+            val (done, total) = doneTotal
+            when (status) {
+                DownloadManager.STATUS_SUCCESSFUL -> {
+                    onState(DownloadState.Done)
+                    installDownloaded(ctx)
+                    return
+                }
+                DownloadManager.STATUS_FAILED -> {
+                    onState(DownloadState.Failed(reasonText(reason)))
+                    return
+                }
+                else -> {
+                    onState(DownloadState.Progress(done, total))
+                    delay(1000)
                 }
             }
-            ContextCompat.registerReceiver(
-                ctx, receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-                ContextCompat.RECEIVER_NOT_EXPORTED
+        }
+    }
+
+    private fun reasonText(reason: Int): String = when (reason) {
+        DownloadManager.ERROR_CANNOT_RESUME -> "download can't resume"
+        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "storage not found"
+        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "file already exists"
+        DownloadManager.ERROR_FILE_ERROR -> "couldn't write the file"
+        DownloadManager.ERROR_HTTP_DATA_ERROR -> "network error while downloading"
+        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "not enough storage"
+        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "too many redirects"
+        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "server refused the download"
+        DownloadManager.ERROR_UNKNOWN -> "unknown error"
+        else -> "error $reason"
+    }
+
+    /** Opens the system installer for the downloaded APK. */
+    private fun installDownloaded(ctx: Context) {
+        val file = File(
+            ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+            "wansky-update.apk"
+        )
+        if (!file.exists()) {
+            Toast.makeText(
+                ctx,
+                "Download finished but the file is missing — try again.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        try {
+            val apkUri = FileProvider.getUriForFile(
+                ctx, "app.pepper.wansky.fileprovider", file
             )
-            true
+            val install = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+            }
+            ctx.startActivity(install)
         } catch (e: Exception) {
-            false
+            Toast.makeText(
+                ctx,
+                "Couldn't open the installer — tap the finished download notification instead.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 }
