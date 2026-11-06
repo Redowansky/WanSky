@@ -49,6 +49,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // LiveTv + SportsSoccer live in the extended icons pack, not core.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.8.0")
 
     // Media3 (ExoPlayer) — HLS (.m3u8) live TV + R2 movie playback.
