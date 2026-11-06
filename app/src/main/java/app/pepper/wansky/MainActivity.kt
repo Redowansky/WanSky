@@ -48,6 +48,7 @@ import app.pepper.wansky.ui.MyListScreen
 import app.pepper.wansky.ui.PlayerScreen
 import app.pepper.wansky.ui.WebViewPlayerScreen
 import app.pepper.wansky.ui.YouTubeScreen
+import app.pepper.wansky.ui.YtPlayerScreen
 import app.pepper.wansky.ui.theme.WanskyTheme
 
 class MainActivity : ComponentActivity() {
@@ -112,13 +113,16 @@ class MainActivity : ComponentActivity() {
                         composable("home") { HomeScreen(nav) }
                         composable("discover") { DiscoverScreen(nav) }
                         composable("mylist") { MyListScreen(nav) }
-                        composable("youtube") { YouTubeScreen() }
+                        composable("youtube") { YouTubeScreen(nav) }
                         composable("grid") { GridScreen(nav) }
                         composable("detail/{id}") { e ->
                             DetailScreen(nav, e.arguments?.getString("id") ?: "")
                         }
                         composable("player") { PlayerScreen(nav) }
                         composable("webview") { WebViewPlayerScreen(nav) }
+                        composable("ytplayer/{id}") { e ->
+                            YtPlayerScreen(nav, e.arguments?.getString("id") ?: "")
+                        }
                     }
                 }
             }

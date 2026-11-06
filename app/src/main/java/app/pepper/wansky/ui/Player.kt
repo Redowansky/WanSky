@@ -6,9 +6,13 @@ import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -38,6 +42,7 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
+import app.pepper.wansky.data.YouTube
 
 /** In-memory handoff to the player destinations (avoids encoding
  *  long signed URLs into navigation arguments). */
@@ -45,6 +50,11 @@ object PlayQueue {
     var url: String? = null
     var title: String? = null
     var webUrl: String? = null
+}
+
+/** Title handoff for the YouTube player (the id travels in the route). */
+object YtQueue {
+    var title: String? = null
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -196,6 +206,90 @@ fun WebViewPlayerScreen(nav: NavController) {
                 },
                 modifier = Modifier.padding(inner).fillMaxSize()
             )
+        }
+    }
+}
+
+/** YouTube player (v0.2): the embed in a 16:9 box on top, then an
+ *  "Up next" list of related videos. Tapping one swaps the player
+ *  (the old player leaves the back stack, so Back returns to the
+ *  YouTube tab). Fullscreen expand inside the embed isn't wired in
+ *  v0.2 — the video plays inline. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun YtPlayerScreen(nav: NavController, videoId: String) {
+    val title = YtQueue.title ?: "YouTube"
+    var upNext by remember { mutableStateOf<List<YouTube.Video>?>(null) }
+
+    LaunchedEffect(videoId) {
+        upNext = try {
+            YouTube.related(videoId)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(title, maxLines = 1) },
+                navigationIcon = {
+                    IconButton({ nav.popBackStack() }) {
+                        Icon(Icons.Filled.ArrowBack, "Back")
+                    }
+                }
+            )
+        }
+    ) { inner ->
+        Column(Modifier.padding(inner).fillMaxSize()) {
+            AndroidView(
+                factory = { c ->
+                    WebView(c).apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        webChromeClient = WebChromeClient()
+                        webViewClient = WebViewClient()
+                        loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&rel=0")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Up next",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            val next = upNext
+            if (next == null) {
+                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (next.isEmpty()) {
+                Text(
+                    "No related videos found.",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            } else {
+                LazyColumn(
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                        horizontal = 16.dp, vertical = 8.dp
+                    ),
+                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(20.dp)
+                ) {
+                    items(next, key = { it.id }) { v ->
+                        YtVideoCard(v) {
+                            YtQueue.title = v.title
+                            nav.navigate("ytplayer/${v.id}") {
+                                popUpTo("youtube")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

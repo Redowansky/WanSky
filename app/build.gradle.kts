@@ -12,8 +12,15 @@ android {
         applicationId = "app.pepper.wansky"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.2.0"
+        // YouTube Data API key: injected from the YOUTUBE_API_KEY Actions
+        // secret (or a local.properties entry for local builds). The key
+        // never lives in the repo. A blank key makes the YouTube tab show
+        // a "key missing" error instead of crashing.
+        val ytKey = (project.findProperty("YOUTUBE_API_KEY") as String?)
+            ?: System.getenv("YOUTUBE_API_KEY") ?: ""
+        buildConfigField("String", "YOUTUBE_API_KEY", "\"$ytKey\"")
     }
 
     buildTypes {
@@ -33,6 +40,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
