@@ -47,7 +47,7 @@ object Playlists {
                 async(Dispatchers.IO) {
                     try {
                         val req = Request.Builder().url(url)
-                            .header("User-Agent", "WanskyApp/0.2.4").build()
+                            .header("User-Agent", "WanskyApp/0.2.5").build()
                         client.newCall(req).execute().use { resp ->
                             if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
                             parseM3u(resp.body?.string().orEmpty(), label) to (null as String?)

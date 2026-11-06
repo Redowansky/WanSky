@@ -1,26 +1,26 @@
 package app.pepper.wansky.data
 
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Environment
+import android.provider.Settings
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
 /** In-app updates (v0.2.1): the app checks a small version.json on R2
  *  at Home launch. If the remote versionCode is newer, Home shows an
- *  "Update available" banner; tapping Update downloads the APK with
- *  DownloadManager and opens the system installer. No more manual
- *  uninstall/reinstall from the Downloads folder.
+ *  "Update available" banner; tapping Update downloads the APK and
+ *  opens the system installer. No more manual uninstall/reinstall
+ *  from the Downloads folder.
  *
  *  The check is fail-open: any failure (offline, bad JSON) just means
  *  no banner. The notes stay generic by his rule — never a changelog.
@@ -30,17 +30,23 @@ import java.util.concurrent.TimeUnit
  *  app in place. Debug builds (a fresh throwaway key per cloud run)
  *  can never update over each other — that's the conflict he hit.
  *
- *  v0.2.3 lesson: v0.2.1 waited for DownloadManager's "download
- *  finished" broadcast to open the installer — on his phone that
- *  broadcast never arrived, so the banner sat on "Downloading…"
- *  forever with no progress and no error. The download is now
- *  POLLED once a second from DownloadManager itself (status, bytes
- *  downloaded, failure reason), which is the source of truth, and
- *  the banner shows live progress. The broadcast is gone entirely. */
+ *  v0.2.5 lesson — DownloadManager is dead on his phone, twice over:
+ *  v0.2.1 waited for its "download finished" broadcast (never came);
+ *  v0.2.3 polled it once a second (still stuck at "Downloading…
+ *  0.0 MB" — no traffic ever moved, no error ever surfaced). This
+ *  is the EXACT failure the Redowansky Library app hit and fixed in
+ *  v0.6.6: its UpdateInstaller documents that DownloadManager on
+ *  this phone starts nothing, shows nothing, and fails silently.
+ *  The fix, same as the Library app: download DIRECTLY with OkHttp
+ *  — the same network path the app already uses for the catalog and
+ *  the version check — stream it to a file with live progress, and
+ *  on ANY failure report the exact error in the banner (Retry) so
+ *  it can be screenshotted, instead of going quiet. DownloadManager
+ *  is gone entirely. */
 object Updater {
     const val VERSION_URL =
         "https://pub-89e47025e7844f1eaf672a00cfdbba12.r2.dev/app/wansky-version.json"
-    private const val UA = "WanskyApp/0.2.4"
+    private const val UA = "WanskyApp/0.2.5"
 
     data class UpdateInfo(
         val versionCode: Int,
@@ -73,7 +79,7 @@ object Updater {
         null
     }
 
-    /** Live state of one update download, polled from DownloadManager. */
+    /** Live state of one update download. */
     sealed interface DownloadState {
         data object Idle : DownloadState
         data class Progress(val done: Long, val total: Long) : DownloadState
@@ -81,103 +87,95 @@ object Updater {
         data object Done : DownloadState
     }
 
-    /** Starts the download, then polls its status once a second until
-     *  it finishes or fails, reporting each state through onState
-     *  (always called on the main thread). On success the installer
-     *  opens automatically. If the user leaves Home mid-download the
-     *  polling stops but the system download keeps going — its own
-     *  notification can be tapped to install. */
+    /** Downloads the APK directly with OkHttp (no DownloadManager),
+     *  reporting each state through onState (always on the main
+     *  thread). On success the installer opens automatically. */
     suspend fun download(
         ctx: Context, apkUrl: String, onState: (DownloadState) -> Unit
     ) {
         onState(DownloadState.Idle)
-        val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val id = try {
-            dm.enqueue(
-                DownloadManager.Request(Uri.parse(apkUrl))
-                    .setTitle("Wansky update")
-                    .setDescription("Downloading the new version…")
-                    .setNotificationVisibility(
-                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-                    )
-                    .setDestinationInExternalFilesDir(
-                        ctx, Environment.DIRECTORY_DOWNLOADS, "wansky-update.apk"
-                    )
-                    .setMimeType("application/vnd.android.package-archive")
-            )
-        } catch (e: Exception) {
-            onState(DownloadState.Failed(e.message ?: "couldn't start"))
+        // First run needs the one-time "allow installs" toggle; the
+        // installer would otherwise fail with no useful message.
+        if (android.os.Build.VERSION.SDK_INT >= 26 &&
+            !ctx.packageManager.canRequestPackageInstalls()
+        ) {
+            Toast.makeText(
+                ctx,
+                "Allow installs for Wansky once, then tap Update again",
+                Toast.LENGTH_LONG
+            ).show()
+            try {
+                ctx.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${ctx.packageName}")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (_: Exception) {
+            }
             return
         }
-        while (true) {
-            val snap = withContext(Dispatchers.IO) {
-                val c = dm.query(DownloadManager.Query().setFilterById(id))
-                var status = DownloadManager.STATUS_FAILED
-                var done = 0L
-                var total = -1L
-                var reason = 0
-                if (c != null) {
-                    if (c.moveToFirst()) {
-                        status = c.getInt(
-                            c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)
-                        )
-                        done = c.getLong(
-                            c.getColumnIndexOrThrow(
-                                DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR
-                            )
-                        )
-                        total = c.getLong(
-                            c.getColumnIndexOrThrow(
-                                DownloadManager.COLUMN_TOTAL_SIZE_BYTES
-                            )
-                        )
-                        reason = c.getInt(
-                            c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)
-                        )
+        val dir = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: ctx.cacheDir
+        val tmp = File(dir, "wansky-update.apk.tmp")
+        val file = File(dir, "wansky-update.apk")
+        try {
+            val dlClient = client.newBuilder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .build()
+            val req = Request.Builder().url(apkUrl)
+                .header("User-Agent", UA)
+                .header("Cache-Control", "no-cache")
+                .build()
+            val (downloaded, total) = withContext(Dispatchers.IO) {
+                dlClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        throw java.io.IOException("server refused (HTTP ${resp.code})")
                     }
-                    c.close()
+                    val body = resp.body ?: throw java.io.IOException("empty response")
+                    val totalBytes = body.contentLength()
+                    var done = 0L
+                    var lastPosted = 0L
+                    body.byteStream().use { input ->
+                        FileOutputStream(tmp).use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                done += n
+                                if (done - lastPosted >= 256 * 1024) {
+                                    lastPosted = done
+                                    withContext(Dispatchers.Main) {
+                                        onState(DownloadState.Progress(done, totalBytes))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    done to totalBytes
                 }
-                Triple(status, done to total, reason)
             }
-            val (status, doneTotal, reason) = snap
-            val (done, total) = doneTotal
-            when (status) {
-                DownloadManager.STATUS_SUCCESSFUL -> {
-                    onState(DownloadState.Done)
-                    installDownloaded(ctx)
-                    return
-                }
-                DownloadManager.STATUS_FAILED -> {
-                    onState(DownloadState.Failed(reasonText(reason)))
-                    return
-                }
-                else -> {
-                    onState(DownloadState.Progress(done, total))
-                    delay(1000)
-                }
+            if (downloaded == 0L) throw java.io.IOException("empty download (0 bytes)")
+            if (total > 0 && downloaded != total) {
+                throw java.io.IOException("incomplete download ($downloaded / $total bytes)")
             }
+            tmp.renameTo(file)
+            onState(DownloadState.Done)
+            installDownloaded(ctx, file)
+        } catch (e: Exception) {
+            try { tmp.delete() } catch (_: Exception) {}
+            onState(
+                DownloadState.Failed(
+                    "${e.javaClass.simpleName}: ${e.message ?: "no detail"}"
+                )
+            )
         }
-    }
-
-    private fun reasonText(reason: Int): String = when (reason) {
-        DownloadManager.ERROR_CANNOT_RESUME -> "download can't resume"
-        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "storage not found"
-        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "file already exists"
-        DownloadManager.ERROR_FILE_ERROR -> "couldn't write the file"
-        DownloadManager.ERROR_HTTP_DATA_ERROR -> "network error while downloading"
-        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "not enough storage"
-        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "too many redirects"
-        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "server refused the download"
-        DownloadManager.ERROR_UNKNOWN -> "unknown error"
-        else -> "error $reason"
     }
 
     /** Opens the system installer for the downloaded APK. */
-    private fun installDownloaded(ctx: Context) {
-        val file = File(
-            ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
-            "wansky-update.apk"
-        )
+    private fun installDownloaded(ctx: Context, file: File) {
         if (!file.exists()) {
             Toast.makeText(
                 ctx,
@@ -199,7 +197,8 @@ object Updater {
         } catch (e: Exception) {
             Toast.makeText(
                 ctx,
-                "Couldn't open the installer — tap the finished download notification instead.",
+                "Couldn't open the installer: ${e.message ?: "unknown error"} — " +
+                    "the APK is in the app's Download folder.",
                 Toast.LENGTH_LONG
             ).show()
         }
