@@ -3,6 +3,7 @@ package app.pepper.wansky.ui
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.view.View
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +42,9 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
 import app.pepper.wansky.data.YouTube
 
@@ -55,6 +59,34 @@ object PlayQueue {
 /** Title handoff for the YouTube player (the id travels in the route). */
 object YtQueue {
     var title: String? = null
+}
+
+/** Lifecycle for a player WebView (v0.2.7) — two bugs, one helper:
+ *  (1) Ghost audio: a WebView keeps playing after its screen goes
+ *  away unless it is paused and destroyed. Back (or Home / lock)
+ *  must mean silence, so ON_PAUSE pauses it and dispose destroys
+ *  it. ON_RESUME resumes it when the user comes back to the player
+ *  screen. (2) Black video: by default a WebView renders on a
+ *  software layer that cannot display video — audio plays over a
+ *  black box. The fix is LAYER_TYPE_HARDWARE, set in the factory
+ *  of each player WebView below. */
+@Composable
+private fun WebViewPlayerLifecycle(webView: () -> WebView?) {
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> webView()?.onPause()
+                Lifecycle.Event.ON_RESUME -> webView()?.onResume()
+                else -> {}
+            }
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose {
+            owner.lifecycle.removeObserver(observer)
+            webView()?.apply { onPause(); stopLoading(); destroy() }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -172,6 +204,8 @@ fun PlayerScreen(nav: NavController) {
 fun WebViewPlayerScreen(nav: NavController) {
     val url = PlayQueue.webUrl
     val title = PlayQueue.title ?: "Playing"
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    WebViewPlayerLifecycle { webViewRef }
 
     Scaffold(
         topBar = {
@@ -196,11 +230,15 @@ fun WebViewPlayerScreen(nav: NavController) {
             AndroidView(
                 factory = { c ->
                     WebView(c).apply {
+                        // Hardware layer: without it the video surface
+                        // stays black while audio plays (v0.2.7).
+                        setLayerType(View.LAYER_TYPE_HARDWARE, null)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.mediaPlaybackRequiresUserGesture = false
                         webChromeClient = WebChromeClient()
                         webViewClient = WebViewClient()
+                        webViewRef = this
                         loadUrl(url)
                     }
                 },
@@ -233,6 +271,8 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
     val title = YtQueue.title ?: "YouTube"
     var upNext by remember { mutableStateOf<List<YouTube.Video>?>(null) }
     var upNextChannel by remember { mutableStateOf("") }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    WebViewPlayerLifecycle { webViewRef }
 
     LaunchedEffect(videoId) {
         upNext = try {
@@ -260,11 +300,15 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
             AndroidView(
                 factory = { c ->
                     WebView(c).apply {
+                        // Hardware layer: without it the video surface
+                        // stays black while audio plays (v0.2.7).
+                        setLayerType(View.LAYER_TYPE_HARDWARE, null)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         settings.mediaPlaybackRequiresUserGesture = false
                         webChromeClient = WebChromeClient()
                         webViewClient = WebViewClient()
+                        webViewRef = this
                         // The iframe lives in a wrapper document whose
                         // base URL is our own domain — that is what
                         // YouTube reads as the embedder (see the

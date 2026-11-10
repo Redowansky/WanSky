@@ -12,8 +12,8 @@ android {
         applicationId = "app.pepper.wansky"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "0.2.6"
+        versionCode = 10
+        versionName = "0.2.7"
         // YouTube Data API key: injected from the YOUTUBE_API_KEY Actions
         // secret (or a local.properties entry for local builds). The key
         // never lives in the repo. A blank key makes the YouTube tab show
