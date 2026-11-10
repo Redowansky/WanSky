@@ -318,13 +318,27 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
     var notifAsked by remember { mutableStateOf(false) }
 
     // One MediaController for this screen, bound to PlaybackService.
+    // Hardened (v0.2.9): if the service can't be resolved the screen
+    // shows an error instead of crashing — the missing
+    // MediaSessionService intent-filter did exactly that on 0.2.8.
     DisposableEffect(Unit) {
-        val future = MediaController.Builder(
-            ctx,
-            SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
-        ).buildAsync()
-        future.addListener(
-            { controller = future.get() },
+        val future = try {
+            MediaController.Builder(
+                ctx,
+                SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
+            ).buildAsync()
+        } catch (e: Exception) {
+            errorMsg = "Couldn't start the player: ${e.message}"
+            null
+        }
+        future?.addListener(
+            {
+                try {
+                    controller = future.get()
+                } catch (e: Exception) {
+                    errorMsg = "Couldn't start the player: ${e.message}"
+                }
+            },
             ContextCompat.getMainExecutor(ctx)
         )
         onDispose {
@@ -332,7 +346,7 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
             // ghost-audio rule). Song mode keeps playing: the service
             // stays alive with its notification.
             if (mode == YtMode.Video) controller?.pause()
-            MediaController.releaseFuture(future)
+            if (future != null) MediaController.releaseFuture(future)
             controller = null
         }
     }
