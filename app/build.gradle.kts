@@ -12,8 +12,8 @@ android {
         applicationId = "app.pepper.wansky"
         minSdk = 26
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.2.7"
+        versionCode = 11
+        versionName = "0.2.8"
         // YouTube Data API key: injected from the YOUTUBE_API_KEY Actions
         // secret (or a local.properties entry for local builds). The key
         // never lives in the repo. A blank key makes the YouTube tab show
@@ -50,6 +50,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // NewPipeExtractor needs Java 8/11 NIO APIs on minSdk 26.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -83,6 +85,15 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
+    // MediaSessionService — background audio for Song mode (v0.2.8).
+    implementation("androidx.media3:media3-session:1.4.1")
+
+    // Native YouTube playback (v0.2.8): NewPipeExtractor resolves direct
+    // stream URLs (DASH / progressive / audio-only) so YouTube plays in
+    // ExoPlayer instead of a WebView — the WebView route failed twice
+    // (Error 153, then the black video box on 0.2.7).
+    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.0")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
     // Posters (TMDB) via Coil.
     implementation("io.coil-kt:coil-compose:2.7.0")

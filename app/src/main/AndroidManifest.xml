@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- In-app updates: install the downloaded APK. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Song mode (v0.2.8): audio keeps playing in the background via a
+         foreground media service + its notification. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Live TV streams include plain-http URLs (the 103 BDIX playlist
          and some iptv-org entries), so cleartext is allowed. -->
@@ -36,6 +41,14 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Owns the YouTube ExoPlayer (v0.2.8): the player screen drives
+             it through a MediaController, so Song mode keeps playing in
+             the background with a notification + lock-screen controls. -->
+        <service
+            android:name=".service.PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
     </application>
 </manifest>

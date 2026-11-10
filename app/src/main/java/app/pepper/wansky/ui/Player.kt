@@ -47,6 +47,32 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
 import app.pepper.wansky.data.YouTube
+import android.Manifest
+import android.content.ComponentName
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.Slider
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.layout.ContentScale
+import androidx.core.content.ContextCompat
+import androidx.media3.common.C
+import androidx.media3.common.MediaMetadata
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionToken
+import app.pepper.wansky.data.YtExtractor
+import app.pepper.wansky.data.YtStreams
+import app.pepper.wansky.service.PlaybackService
+import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 
 /** In-memory handoff to the player destinations (avoids encoding
  *  long signed URLs into navigation arguments). */
@@ -248,31 +274,104 @@ fun WebViewPlayerScreen(nav: NavController) {
     }
 }
 
-/** YouTube player (v0.2): the embed in a 16:9 box on top, then an
- *  "Up next" list of related videos. Tapping one swaps the player
- *  (the old player leaves the back stack, so Back returns to the
- *  YouTube tab). Fullscreen expand inside the embed isn't wired in
- *  v0.2 — the video plays inline.
+/** Song / Video toggle for the native YouTube player. */
+private enum class YtMode { Video, Song }
+
+private fun fmtTime(ms: Long): String {
+    val s = (ms / 1000).toInt().coerceAtLeast(0)
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
+/** YouTube player (v0.2.8): NATIVE ExoPlayer, no WebView.
  *
- *  Error 153 fix (v0.2.6): YouTube has enforced, since late 2025,
- *  that an embedded player must identify its embedder through the
- *  HTTP Referer header. Loading the embed URL directly with
- *  loadUrl() is a top-level navigation with NO embedding page, so
- *  YouTube sees no Referer and refuses every video with "Video
- *  player configuration error" (Error 153). The fix is to wrap the
- *  iframe in a real HTML document and load it with a base URL, so
- *  the iframe request carries our domain as Referer — and to pass
- *  the same origin in the iframe's origin= parameter. The base URL
- *  must be a real domain we own (redowansky.bond); YouTube's own
- *  domain as the embedding origin is refused too (Error 152). */
+ *  The WebView route failed twice — Error 153 (v0.2.6 fixed the
+ *  Referer), then the black video box WITH audio on 0.2.7 despite
+ *  LAYER_TYPE_HARDWARE + manifest hardwareAccelerated. So the player
+ *  is now NewPipeExtractor → ExoPlayer, owned by PlaybackService and
+ *  driven through a MediaController.
+ *
+ *  That also delivers the Music mode: a Song/Video toggle. Video
+ *  plays the video; Song plays the audio-only track and keeps going
+ *  in the background with a notification. With a DASH manifest both
+ *  modes share one item (Song just disables the video track, so the
+ *  toggle never rebuffers); without DASH the modes swap between the
+ *  progressive video URL and the audio-only URL, keeping the
+ *  position.
+ *
+ *  Video mode pauses when the app goes to the background (no ghost
+ *  audio — the v0.2.7 rule); Song mode deliberately does not. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun YtPlayerScreen(nav: NavController, videoId: String) {
+    val ctx = LocalContext.current
     val title = YtQueue.title ?: "YouTube"
     var upNext by remember { mutableStateOf<List<YouTube.Video>?>(null) }
     var upNextChannel by remember { mutableStateOf("") }
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    WebViewPlayerLifecycle { webViewRef }
+    var streams by remember { mutableStateOf<YtStreams?>(null) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+    var retryKey by remember { mutableStateOf(0) }
+    var mode by remember { mutableStateOf(YtMode.Video) }
+    var controller by remember { mutableStateOf<MediaController?>(null) }
+    var positionMs by remember { mutableLongStateOf(0L) }
+    var durationMs by remember { mutableLongStateOf(0L) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var notifAsked by remember { mutableStateOf(false) }
+
+    // One MediaController for this screen, bound to PlaybackService.
+    DisposableEffect(Unit) {
+        val future = MediaController.Builder(
+            ctx,
+            SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
+        ).buildAsync()
+        future.addListener(
+            { controller = future.get() },
+            ContextCompat.getMainExecutor(ctx)
+        )
+        onDispose {
+            // Leaving the screen in Video mode = silence (the v0.2.7
+            // ghost-audio rule). Song mode keeps playing: the service
+            // stays alive with its notification.
+            if (mode == YtMode.Video) controller?.pause()
+            MediaController.releaseFuture(future)
+            controller = null
+        }
+    }
+
+    // Resolve the video to playable stream URLs.
+    LaunchedEffect(videoId, retryKey) {
+        errorMsg = null
+        streams = null
+        mode = YtMode.Video
+        streams = try {
+            YtExtractor.extract(videoId)
+        } catch (e: Exception) {
+            errorMsg = e.message ?: "Couldn't load this video."
+            null
+        }
+    }
+
+    // Hand the resolved stream to the service player.
+    LaunchedEffect(controller, streams) {
+        val c = controller
+        val s = streams
+        if (c != null && s != null) {
+            val url = if (s.dashUrl.isNotBlank()) s.dashUrl else s.videoUrl
+            if (url.isBlank()) {
+                errorMsg = "No playable stream found for this video."
+            } else {
+                val item = MediaItem.Builder().setUri(url)
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle(s.title.ifBlank { title })
+                            .setArtist(s.uploader)
+                            .build()
+                    ).build()
+                c.setMediaItem(item)
+                c.prepare()
+                c.play()
+            }
+        }
+    }
 
     LaunchedEffect(videoId) {
         upNext = try {
@@ -284,10 +383,99 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
         }
     }
 
+    // Seek-bar + play/pause state, polled from the controller.
+    LaunchedEffect(controller) {
+        while (true) {
+            controller?.let {
+                positionMs = it.currentPosition
+                val d = it.duration
+                durationMs = if (d > 0) d else 0L
+                isPlaying = it.isPlaying
+            }
+            delay(500)
+        }
+    }
+
+    // Video mode pauses when the app goes away (no ghost audio);
+    // Song mode deliberately keeps playing.
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        var wasPlaying = false
+        val observer = LifecycleEventObserver { _, event ->
+            val c = controller ?: return@LifecycleEventObserver
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    if (mode == YtMode.Video) {
+                        wasPlaying = c.isPlaying
+                        c.pause()
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    if (mode == YtMode.Video && wasPlaying) c.play()
+                }
+                else -> {}
+            }
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer) }
+    }
+
+    // The background-audio notification needs POST_NOTIFICATIONS on
+    // Android 13+. If he denies it, Song mode still plays — there is
+    // just no notification to pause from (the app has to be reopened).
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* result ignored: playback works either way */ }
+    fun ensureNotifPermission() {
+        if (notifAsked) return
+        notifAsked = true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                ctx, Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    fun applyMode(newMode: YtMode) {
+        val c = controller ?: return
+        val s = streams ?: return
+        if (newMode == mode) return
+        mode = newMode
+        if (newMode == YtMode.Song) ensureNotifPermission()
+        if (s.dashUrl.isNotBlank()) {
+            // One adaptive item: just disable / re-enable the video
+            // track. No rebuffer, no position loss.
+            c.trackSelectionParameters = c.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, newMode == YtMode.Song)
+                .build()
+        } else {
+            val url = if (newMode == YtMode.Song) s.audioUrl else s.videoUrl
+            if (url.isNotBlank()) {
+                val item = MediaItem.Builder().setUri(url)
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle(s.title.ifBlank { title })
+                            .setArtist(s.uploader)
+                            .build()
+                    ).build()
+                c.setMediaItem(item, c.currentPosition)
+                c.prepare()
+                c.play()
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(title, maxLines = 1) },
+                title = {
+                    Text(
+                        streams?.title?.ifBlank { title } ?: title,
+                        maxLines = 1
+                    )
+                },
                 navigationIcon = {
                     IconButton({ nav.popBackStack() }) {
                         Icon(Icons.Filled.ArrowBack, "Back")
@@ -297,41 +485,150 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
         }
     ) { inner ->
         Column(Modifier.padding(inner).fillMaxSize()) {
-            AndroidView(
-                factory = { c ->
-                    WebView(c).apply {
-                        // Hardware layer: without it the video surface
-                        // stays black while audio plays (v0.2.7).
-                        setLayerType(View.LAYER_TYPE_HARDWARE, null)
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.mediaPlaybackRequiresUserGesture = false
-                        webChromeClient = WebChromeClient()
-                        webViewClient = WebViewClient()
-                        webViewRef = this
-                        // The iframe lives in a wrapper document whose
-                        // base URL is our own domain — that is what
-                        // YouTube reads as the embedder (see the
-                        // Error 153 note above). Never load the embed
-                        // URL directly with loadUrl().
-                        val html = """
-                            <!DOCTYPE html><html><head>
-                            <meta name="viewport" content="width=device-width, initial-scale=1">
-                            <style>html,body{margin:0;padding:0;background:#000;height:100%}iframe{width:100%;height:100%;border:0}</style>
-                            </head><body>
-                            <iframe src="https://www.youtube.com/embed/$videoId?autoplay=1&rel=0&origin=https%3A%2F%2Fredowansky.bond"
-                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                             allowfullscreen></iframe>
-                            </body></html>
-                        """.trimIndent()
-                        loadDataWithBaseURL(
-                            "https://redowansky.bond", html,
-                            "text/html", "UTF-8", null
-                        )
+            // Song / Video toggle (Hamyra-style Music mode).
+            Row(
+                Modifier.fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    { applyMode(YtMode.Video) },
+                    modifier = Modifier.weight(1f),
+                    enabled = mode != YtMode.Video
+                ) { Text("▶ Video") }
+                Button(
+                    { applyMode(YtMode.Song) },
+                    modifier = Modifier.weight(1f),
+                    enabled = mode != YtMode.Song
+                ) { Text("♪ Song") }
+            }
+            when {
+                errorMsg != null -> {
+                    Box(
+                        Modifier.fillMaxWidth().padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                "Couldn't play this one",
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                errorMsg!!,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Button({ retryKey++ }) { Text("Try again") }
+                            Spacer(Modifier.height(8.dp))
+                            Button({
+                                ctx.startActivity(
+                                    Intent(
+                                        Intent.ACTION_VIEW,
+                                        Uri.parse(
+                                            "https://www.youtube.com/watch?v=$videoId"
+                                        )
+                                    )
+                                )
+                            }) { Text("Open in YouTube") }
+                        }
                     }
-                },
-                modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
-            )
+                }
+                streams == null -> {
+                    Box(
+                        Modifier.fillMaxWidth().padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) { CircularProgressIndicator() }
+                }
+                mode == YtMode.Video -> {
+                    AndroidView(
+                        factory = { c ->
+                            PlayerView(c).apply { useController = true }
+                        },
+                        update = { it.player = controller },
+                        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                    )
+                }
+                else -> {
+                    // Song mode: big art + controls, no video surface.
+                    val s = streams!!
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        AsyncImage(
+                            model = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxWidth()
+                                .aspectRatio(16f / 9f)
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            s.title.ifBlank { title },
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 2
+                        )
+                        if (s.uploader.isNotBlank()) {
+                            Text(
+                                s.uploader,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Slider(
+                            value = positionMs.toFloat(),
+                            onValueChange = { controller?.seekTo(it.toLong()) },
+                            valueRange = 0f..durationMs.toFloat()
+                                .coerceAtLeast(1f),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                fmtTime(positionMs),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                fmtTime(durationMs),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton({
+                                if (isPlaying) controller?.pause()
+                                else controller?.play()
+                            }) {
+                                Icon(
+                                    if (isPlaying) Icons.Filled.Pause
+                                    else Icons.Filled.PlayArrow,
+                                    if (isPlaying) "Pause" else "Play"
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    val next = upNext?.firstOrNull()
+                                    if (next != null) {
+                                        YtQueue.title = next.title
+                                        nav.navigate("ytplayer/${next.id}") {
+                                            popUpTo("youtube")
+                                        }
+                                    }
+                                },
+                                enabled = !upNext.isNullOrEmpty()
+                            ) {
+                                Icon(Icons.Filled.SkipNext, "Next")
+                            }
+                        }
+                    }
+                }
+            }
             Spacer(Modifier.height(12.dp))
             Text(
                 if (upNextChannel.isBlank()) "Up next"
@@ -343,7 +640,10 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
             Spacer(Modifier.height(8.dp))
             val next = upNext
             if (next == null) {
-                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.fillMaxWidth().padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
                     CircularProgressIndicator()
                 }
             } else if (next.isEmpty()) {
