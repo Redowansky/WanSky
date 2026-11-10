@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
  *  videos.list only (1 unit), so the home feed is nearly free. */
 object YouTube {
     private const val BASE = "https://www.googleapis.com/youtube/v3"
-    private const val UA = "WanskyApp/0.2.9"
+    private const val UA = "WanskyApp/0.3.0"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -108,23 +108,45 @@ object YouTube {
      *  channel": one cheap videos.list call (1 unit) for the video's
      *  channelId, then a channel search (100 units) for its latest
      *  videos. Same 101-unit cost as one search. */
-    data class RelatedResult(val videos: List<Video>, val channel: String)
+    data class RelatedResult(
+        val videos: List<Video>,
+        val channel: String,
+        /** Channel avatar for the player screen's channel row. */
+        val channelAvatar: String = "",
+        /** The current video's own stats (from the same videos.list). */
+        val views: String = "",
+        val published: String = ""
+    )
 
     suspend fun related(videoId: String): RelatedResult {
         val k = key()
-        val meta = get("$BASE/videos?part=snippet&id=$videoId&key=$k")
-        val sn = meta.optJSONArray("items")?.optJSONObject(0)
-            ?.optJSONObject("snippet")
+        val meta = get("$BASE/videos?part=snippet,statistics&id=$videoId&key=$k")
+        val item = meta.optJSONArray("items")?.optJSONObject(0)
+        val sn = item?.optJSONObject("snippet")
         val channelId = sn?.optString("channelId") ?: ""
         val channelTitle = unescape(sn?.optString("channelTitle") ?: "")
-        if (channelId.isBlank()) return RelatedResult(emptyList(), "")
+        val views = formatViews(
+            item?.optJSONObject("statistics")?.optString("viewCount") ?: ""
+        )
+        val published = relativeTime(sn?.optString("publishedAt") ?: "")
+        if (channelId.isBlank()) return RelatedResult(emptyList(), "", "", views, published)
+        // Channel avatar: one cheap channels.list call (1 unit).
+        var avatar = ""
+        try {
+            val ch = get("$BASE/channels?part=snippet&id=$channelId&key=$k")
+            val thumbs = ch.optJSONArray("items")?.optJSONObject(0)
+                ?.optJSONObject("snippet")?.optJSONObject("thumbnails")
+            avatar = thumbs?.optJSONObject("default")?.optString("url") ?: ""
+        } catch (e: Exception) {
+            avatar = ""
+        }
         val json = get(
             "$BASE/search?part=snippet&type=video" +
                 "&channelId=$channelId&order=date&maxResults=20&key=$k"
         )
         val ids = parseSearchIds(json).filter { it != videoId }
-        if (ids.isEmpty()) return RelatedResult(emptyList(), channelTitle)
-        return RelatedResult(details(ids), channelTitle)
+        if (ids.isEmpty()) return RelatedResult(emptyList(), channelTitle, avatar, views, published)
+        return RelatedResult(details(ids), channelTitle, avatar, views, published)
     }
 
     private suspend fun details(ids: List<String>): List<Video> {
