@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
  *  videos.list only (1 unit), so the home feed is nearly free. */
 object YouTube {
     private const val BASE = "https://www.googleapis.com/youtube/v3"
-    private const val UA = "WanskyApp/0.2.5"
+    private const val UA = "WanskyApp/0.2.6"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -101,16 +101,30 @@ object YouTube {
         return parseVideos(json)
     }
 
-    /** Videos related to one video — the "Up next" list. */
-    suspend fun related(videoId: String): List<Video> {
+    /** "Up next" (v0.2.6): the old implementation used
+     *  search?relatedToVideoId= — Google deprecated that parameter
+     *  on Aug 7, 2023 and it no longer returns anything, so Up next
+     *  was empty for every video. The replacement is "More from this
+     *  channel": one cheap videos.list call (1 unit) for the video's
+     *  channelId, then a channel search (100 units) for its latest
+     *  videos. Same 101-unit cost as one search. */
+    data class RelatedResult(val videos: List<Video>, val channel: String)
+
+    suspend fun related(videoId: String): RelatedResult {
         val k = key()
+        val meta = get("$BASE/videos?part=snippet&id=$videoId&key=$k")
+        val sn = meta.optJSONArray("items")?.optJSONObject(0)
+            ?.optJSONObject("snippet")
+        val channelId = sn?.optString("channelId") ?: ""
+        val channelTitle = unescape(sn?.optString("channelTitle") ?: "")
+        if (channelId.isBlank()) return RelatedResult(emptyList(), "")
         val json = get(
             "$BASE/search?part=snippet&type=video" +
-                "&relatedToVideoId=$videoId&maxResults=20&key=$k"
+                "&channelId=$channelId&order=date&maxResults=20&key=$k"
         )
-        val ids = parseSearchIds(json)
-        if (ids.isEmpty()) return emptyList()
-        return details(ids)
+        val ids = parseSearchIds(json).filter { it != videoId }
+        if (ids.isEmpty()) return RelatedResult(emptyList(), channelTitle)
+        return RelatedResult(details(ids), channelTitle)
     }
 
     private suspend fun details(ids: List<String>): List<Video> {

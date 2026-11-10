@@ -214,16 +214,31 @@ fun WebViewPlayerScreen(nav: NavController) {
  *  "Up next" list of related videos. Tapping one swaps the player
  *  (the old player leaves the back stack, so Back returns to the
  *  YouTube tab). Fullscreen expand inside the embed isn't wired in
- *  v0.2 — the video plays inline. */
+ *  v0.2 — the video plays inline.
+ *
+ *  Error 153 fix (v0.2.6): YouTube has enforced, since late 2025,
+ *  that an embedded player must identify its embedder through the
+ *  HTTP Referer header. Loading the embed URL directly with
+ *  loadUrl() is a top-level navigation with NO embedding page, so
+ *  YouTube sees no Referer and refuses every video with "Video
+ *  player configuration error" (Error 153). The fix is to wrap the
+ *  iframe in a real HTML document and load it with a base URL, so
+ *  the iframe request carries our domain as Referer — and to pass
+ *  the same origin in the iframe's origin= parameter. The base URL
+ *  must be a real domain we own (redowansky.bond); YouTube's own
+ *  domain as the embedding origin is refused too (Error 152). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun YtPlayerScreen(nav: NavController, videoId: String) {
     val title = YtQueue.title ?: "YouTube"
     var upNext by remember { mutableStateOf<List<YouTube.Video>?>(null) }
+    var upNextChannel by remember { mutableStateOf("") }
 
     LaunchedEffect(videoId) {
         upNext = try {
-            YouTube.related(videoId)
+            val res = YouTube.related(videoId)
+            upNextChannel = res.channel
+            res.videos
         } catch (e: Exception) {
             emptyList()
         }
@@ -250,14 +265,33 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
                         settings.mediaPlaybackRequiresUserGesture = false
                         webChromeClient = WebChromeClient()
                         webViewClient = WebViewClient()
-                        loadUrl("https://www.youtube.com/embed/$videoId?autoplay=1&rel=0")
+                        // The iframe lives in a wrapper document whose
+                        // base URL is our own domain — that is what
+                        // YouTube reads as the embedder (see the
+                        // Error 153 note above). Never load the embed
+                        // URL directly with loadUrl().
+                        val html = """
+                            <!DOCTYPE html><html><head>
+                            <meta name="viewport" content="width=device-width, initial-scale=1">
+                            <style>html,body{margin:0;padding:0;background:#000;height:100%}iframe{width:100%;height:100%;border:0}</style>
+                            </head><body>
+                            <iframe src="https://www.youtube.com/embed/$videoId?autoplay=1&rel=0&origin=https%3A%2F%2Fredowansky.bond"
+                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                             allowfullscreen></iframe>
+                            </body></html>
+                        """.trimIndent()
+                        loadDataWithBaseURL(
+                            "https://redowansky.bond", html,
+                            "text/html", "UTF-8", null
+                        )
                     }
                 },
                 modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                "Up next",
+                if (upNextChannel.isBlank()) "Up next"
+                else "More from $upNextChannel",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                 modifier = Modifier.padding(horizontal = 16.dp)
@@ -270,7 +304,8 @@ fun YtPlayerScreen(nav: NavController, videoId: String) {
                 }
             } else if (next.isEmpty()) {
                 Text(
-                    "No related videos found.",
+                    if (upNextChannel.isBlank()) "No related videos found."
+                    else "No more videos from this channel.",
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
             } else {
